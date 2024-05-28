@@ -48,6 +48,8 @@ public:
 
     bool is_shallow_copy_database() const { return k_reserved[0] == DB_SHALLOW_COPY; }
 
+    // GDM> I do not understand why this is not an attribute of the class (computed in
+    //      the constructor) instead of a function
     KDB* get_database() const
     {
         KDB* kdb = is_global_database() ? K_WS[k_type] : const_cast<KDBAbstract*>(this);

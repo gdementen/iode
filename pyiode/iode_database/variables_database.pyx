@@ -69,6 +69,13 @@ cdef inline _iodevar_to_ndarray(char* name, bint copy = True):
 
 # TODO: (ALD) - check in the Cython 3.0 documentation if there is no other way to create and initialize a Numpy array
 #             - rewrite this function to be based on the C++ API
+# TODO: as far as I can tell, this never clears the current workspace, so it kind of
+#       merges the variables from the array to the current workspace. This can be a good thing
+#       but should be documented. Also, if the did not merge but replace the whole workspace
+#       instead, we might be able to make this function much faster by first initializing an
+#       empty workspace with all the variables in bulk and then copy the values *without* going
+#       via the name of the variable. i.e. using get_var_ptr_unchecked(i). But I did not find
+#       any API to initialize a workspace in bulk.
 def _numpy_array_to_ws(data, vars_names: Iterable[str], periods_list: Iterable[str]):
     cdef int df_pos
     cdef int ws_pos
@@ -85,12 +92,20 @@ def _numpy_array_to_ws(data, vars_names: Iterable[str], periods_list: Iterable[s
     IodeCalcSamplePosition(_cstr(start_period), _cstr(last_period), &df_pos, &ws_pos, &lg)
 
     # replace numpy/pandas NaN by IODE NaN
+    # TODO: move this to IodeSetVector's loop on values to avoid the memory allocation
     data = np.nan_to_num(data, nan=nan)
 
     # copy each line of array into KV_WS on the time intersection of df and KV_WS
     # values = <double*>np.PyArray_DATA(df[vars_names[0]].data)
     if np.issubdtype(data.dtype, np.floating):
         if data.data.c_contiguous:
+            # zip(vars_names, data) iterates on data which creates a new ndarray (it is a view
+            # but it still has to allocate the structure). We should get at the data directly
+            # by using something like this instead:
+            #   assert len(var_names) == len(data)
+            #   for row_num, var_name in enumerate(var_names):
+            #       row_values = <double *> PyArray_GETPTR1(data, row_num)
+            #       IodeSetVector(_cstr(var_name), row_values, df_pos, ws_pos, lg)
             for name, row_data in zip(vars_names, data):
                 # Save the vector of doubles in KV_WS
                 values = < double * > np.PyArray_DATA(row_data)
@@ -182,6 +197,49 @@ cdef class Variables(_AbstractDatabase):
     def _load(self, filepath: str):
         cdef CKDBVariables* kdb = new CKDBVariables(filepath.encode())
         del kdb
+
+    # Copy values from all IODE Variables to a 2D Numpy array
+    def _to_numpy_array(self) -> np.ndarray:
+        cdef int nb_vars = self.abstract_db_ptr.count()
+        cdef int nb_periods, i, j
+        cdef double value
+        cdef double *res_data
+        cdef double *iode_data
+        cdef np.npy_intp shape[2]
+        cdef np.ndarray res_array
+
+        db = self.database_ptr
+        nb_periods = db.get_nb_periods()
+        if nb_periods == 0:
+            return None
+
+        shape[0] = <np.npy_intp> nb_vars
+        shape[1] = <np.npy_intp> nb_periods
+
+        # Create an array
+        # See https://numpy.org/doc/stable//reference/c-api/array.html#c.PyArray_SimpleNew
+        res_array = np.PyArray_SimpleNew(2, shape, np.NPY_DOUBLE)
+        res_data = <double *> np.PyArray_DATA(res_array)
+
+        # KDB* kdb = get_database()
+        # if kdb == NULL:
+        #     return None
+        for i in range(nb_vars):
+            # TODO: for maximum performance, we probably want to use KVVAL directly (but that would be useless if the
+            #       C++ compiler is smart enough to inline the get_var_ptr_unchecked method call and move the
+            #       get_database() call outside the loop anyway)
+            # iode_data = KVVAL(kdb, pos, 0)
+            iode_data = db.get_var_ptr_unchecked(i)
+            if iode_data == NULL:
+                for j in range(nb_periods):
+                    *res_data = np.nan
+                    res_data += 1
+            else:
+                for j in range(nb_periods):
+                    value = *iode_data
+                    *res_data = value if value >= -1.0e37 else np.nan
+                    res_data += 1
+        return res
 
     def _subset(self, pattern: str, copy: bool) -> Variables:
         cdef Variables subset_db = Variables.__new__(Variables)
@@ -527,7 +585,7 @@ cdef class Variables(_AbstractDatabase):
         
         vars_list = self.get_names()
         periods_list = self.periods_as_float if sample_as_floats else self.periods
-        data = _ws_to_numpy_array(vars_list, len(periods_list))
+        data = self._to_numpy_array()
 
         df = DataFrame(index=vars_list, columns=periods_list, data=data)
         df.index.name = vars_axis_name
@@ -666,11 +724,11 @@ cdef class Variables(_AbstractDatabase):
 
         vars_list = self.get_names()
         periods_list = self.periods_as_float if sample_as_floats else self.periods
-        data = _ws_to_numpy_array(vars_list, len(periods_list))
+        data = self._to_numpy_array()
         
-        vars_axis = la.Axis(name=vars_axis_name, labels=vars_list)
-        time_axis = la.Axis(name=time_axis_name, labels=periods_list)
-        return la.Array(axes=(vars_axis, time_axis), data=data)
+        vars_axis = la.Axis(vars_list, name=vars_axis_name)
+        time_axis = la.Axis(periods_list, name=time_axis_name)
+        return la.Array(data, axes=(vars_axis, time_axis))
 
     @property
     def mode(self) -> str:

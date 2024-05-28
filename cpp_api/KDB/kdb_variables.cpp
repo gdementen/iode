@@ -49,6 +49,11 @@ IODE_REAL* KDBVariables::get_var_ptr(const int pos)
 	return KVVAL(get_database(), pos, 0);
 }
 
+IODE_REAL* KDBVariables::get_var_ptr_unchecked(const int pos)
+{
+	return KVVAL(get_database(), pos, 0);
+}
+
 IODE_REAL KDBVariables::get_var(const std::string& name, const int t, const EnumIodeVarMode mode) const
 {
 	// throw exception if object with passed name does not exist

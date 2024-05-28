@@ -67,6 +67,15 @@ public:
      */
     IODE_REAL* get_var_ptr(const int pos);
 
+    /**
+     *  Returns a pointer to the first value of the Variable, without checking
+     *  whether pos is valid or if there is at least one period.
+     *
+     *  @param    pos   int        Variable position in the workspace
+     *  @return         double*    pointer to the Variable values
+     */
+    IODE_REAL* get_var_ptr_unchecked(const int pos);
+
     IODE_REAL get_var(const std::string& name, const int t, const EnumIodeVarMode mode = I_VAR_MODE_LEVEL) const;
 
     IODE_REAL get_var(const std::string& name, const std::string& period, const EnumIodeVarMode mode = I_VAR_MODE_LEVEL) const;
